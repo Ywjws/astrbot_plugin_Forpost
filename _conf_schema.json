@@ -1,0 +1,12 @@
+{
+  "monitored_groups": {
+    "type": "list",
+    "default": ["721936992"],
+    "description": "监听的群号列表"
+  },
+  "target_groups": {
+    "type": "list",
+    "default": ["721936992"],
+    "description": "消息转发的目标群号列表"
+  }
+}
