@@ -1,5 +1,5 @@
-# main.py (改进版本)
 import asyncio
+import time
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
@@ -35,6 +35,42 @@ class MediaMonitorPlugin(Star):
         self.sender = MessageSender(context, self.target_groups)
         self.message_cache = {}
         logger.info(f"[MediaMonitor] 插件已加载, 监听群: {self.monitored_groups}, 目标群: {self.target_groups}")
+        
+        # 启动缓存清理任务
+        asyncio.create_task(self._run_cache_cleaner())
+
+    async def _run_cache_cleaner(self):
+        """定时清理 message_cache"""
+        import datetime
+
+        while True:
+            # 计算到明天凌晨1点的时间间隔（东八区）
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+            next_run = now.replace(hour=1, minute=0, second=0, microsecond=0)
+            if now >= next_run:
+                next_run += datetime.timedelta(days=1)
+            sleep_seconds = (next_run - now).total_seconds()
+
+            logger.info(f"[MediaMonitor] 缓存清理任务将在 {sleep_seconds:.0f} 秒后执行（东八区时间 {next_run})")
+            await asyncio.sleep(sleep_seconds)
+
+            # 执行清理
+            self._clean_message_cache()
+
+    def _clean_message_cache(self):
+        """清理 message_cache 中已处理或超时的消息"""
+        to_delete = []
+        for msg_id, info in self.message_cache.items():
+            if info.get("processed", False):
+                to_delete.append(msg_id)
+            # 超时清理（超过1小时未处理的消息也删除）
+            elif time.time() - info.get("timestamp", 0) > 3600:
+                to_delete.append(msg_id)
+
+        for msg_id in to_delete:
+            del self.message_cache[msg_id]
+
+        logger.info(f"[MediaMonitor] 已清理 {len(to_delete)} 条缓存消息")
 
     async def process_ordinary_message(self, message_data: dict, msg_id: int):
         """处理普通消息（文本+媒体）"""
@@ -48,7 +84,8 @@ class MediaMonitorPlugin(Star):
             "text_content": "",
             "media_files": [],
             "processed": False,
-            "is_forward": False
+            "is_forward": False,
+            "timestamp": time.time()  # 添加时间戳
         }
         
         text_parts = []
