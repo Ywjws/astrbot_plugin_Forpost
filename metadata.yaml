@@ -1,5 +1,5 @@
-name: astrbot_plugin_fuckanka # 这是你的插件的唯一识别名。
-desc: "[仅限aiocqhttp] 搬史二号，可转发聊天记录 文本 图片 视频，自带查重缓存(应该不会重复搬了)" # 插件简短描述
-version: v0.0.5 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: ali # 作者
+name: astrbot_plugin_fuckanka
+desc: "[仅限aiocqhttp] 搬史二号，监听群聊转发聊天记录 文本 图片 视频，自带查重缓存"
+version: v0.0.5 
+author: ali 
 repo: https://github.com/Ywjws/astrbot_plugin_Forpost
