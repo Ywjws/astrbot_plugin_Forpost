@@ -1,10 +1,10 @@
 # async_daily_cleaner.py
 import os
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
 class AsyncDailyCleaner:
-    """每天 UTC+8 凌晨 1 点执行 temp 清理任务"""
+    """食雪汉"""
 
     def __init__(self, temp_dir: str):
         self.temp_dir = temp_dir
@@ -20,19 +20,21 @@ class AsyncDailyCleaner:
         return day_tail % 2 == 0
 
     async def clear_temp_files(self):
-        """删除 temp 目录下文件，但保留文件夹"""
+        """删除 temp 目录下文件，但保留文件夹和指定文件"""
         if not os.path.exists(self.temp_dir):
             return
 
-        for item in os.listdir(self.temp_dir):
-            full_path = os.path.join(self.temp_dir, item)
-            if os.path.isfile(full_path):
+        # 使用 walk 递归遍历所有子目录和文件
+        for root, dirs, files in os.walk(self.temp_dir):
+            for file in files:
+                full_path = os.path.join(root, file)
                 if full_path in [self.forward_config, self.sent_md5]:
                     # 清空内容
                     await asyncio.to_thread(lambda p: open(p, "w", encoding="utf-8").truncate(0), full_path)
                 else:
                     # 删除文件
                     await asyncio.to_thread(os.remove, full_path)
+
 
     async def run_daily_task(self):
         """主循环，每天 UTC+8 1 点执行一次清理"""
