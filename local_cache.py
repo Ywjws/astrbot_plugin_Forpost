@@ -163,7 +163,7 @@ class LocalCache:
             elif cq_type in ["image", "video"]:
                 # 图片或视频，提取file参数（文件名）
                 return params.get("file", "")
-            elif cq_type == "reply":
+            elif cq_type == "reply":  # <--- 新增处理 reply 类型
                 rest_text = raw_message[end_bracket + 1:]
                 return rest_text.strip()
             else:
