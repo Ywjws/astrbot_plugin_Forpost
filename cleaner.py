@@ -8,8 +8,8 @@ class AsyncDailyCleaner:
 
     def __init__(self, temp_dir: str):
         self.temp_dir = temp_dir
-        self.forward_config = os.path.join(temp_dir, "forward_config.json")
-        self.sent_md5 = os.path.join(temp_dir, "sent_md5.json")
+        self.forward_config = os.path.join(temp_dir, "shit", "forward_config.json")
+        self.sent_md5 = os.path.join(temp_dir, "shit", "sent_md5.json")
 
     @staticmethod
     def is_even_day_tail() -> bool:
@@ -24,16 +24,30 @@ class AsyncDailyCleaner:
         if not os.path.exists(self.temp_dir):
             return
 
-        # 使用 walk 递归遍历所有子目录和文件
-        for root, dirs, files in os.walk(self.temp_dir):
+        # 需要保留的特定文件（完整路径）
+        preserve_files = {self.forward_config, self.sent_md5}
+        
+        for root, _, files in os.walk(self.temp_dir):
             for file in files:
                 full_path = os.path.join(root, file)
-                if full_path in [self.forward_config, self.sent_md5]:
-                    # 清空内容
-                    await asyncio.to_thread(lambda p: open(p, "w", encoding="utf-8").truncate(0), full_path)
+                
+                # 检查是否是需要保留的特定文件
+                if full_path in preserve_files:
+                    # 清空内容但保留文件
+                    try:
+                        await asyncio.to_thread(lambda p: open(p, "w", encoding="utf-8").close(), full_path)
+                        print(f"已清空: {full_path}")
+                    except Exception as e:
+                        print(f"清空文件 {full_path} 时出错: {e}")
                 else:
-                    # 删除文件
-                    await asyncio.to_thread(os.remove, full_path)
+                    # 删除普通文件
+                    try:
+                        await asyncio.to_thread(os.remove, full_path)
+                        print(f"已删除: {full_path}")
+                    except Exception as e:
+                        print(f"删除文件 {full_path} 时出错: {e}")
+        
+        print(f"已完成清理 {self.temp_dir} 目录")
 
 
     async def run_daily_task(self):
