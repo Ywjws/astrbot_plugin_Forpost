@@ -47,7 +47,7 @@ class MediaDownloader:
                     "Connection": "keep-alive"
                 }
                 
-                response = requests.get(url, stream=True, timeout=30, headers=headers, verify=False)
+                response = requests.get(url, stream=True, timeout=30, headers=headers, verify=True)
                 
                 logger.debug(f"[MediaDownloader] 响应状态码: {response.status_code}")
                 logger.debug(f"[MediaDownloader] 内容类型: {response.headers.get('Content-Type', '未知')}")
