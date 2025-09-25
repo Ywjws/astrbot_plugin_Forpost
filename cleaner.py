@@ -23,7 +23,7 @@ class AsyncDailyCleaner:
             return
 
         # 需要保留的特定文件（完整路径）
-        preserve_files = {"nothing"}
+        preserve_files = {"nothing.bat"}
         
         for root, _, files in os.walk(self.temp_dir):
             for file in files:
@@ -69,3 +69,4 @@ class AsyncDailyCleaner:
                 await self.clear_temp_files()
             else:
                 print("[AsyncDailyCleaner] 非偶数尾号日期，跳过清理")
+
