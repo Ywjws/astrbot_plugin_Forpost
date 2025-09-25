@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import os
 import json
+import aiofiles
 
 class MessageSender:
     """消息发送器 - 支持文本、图片、视频，并记录已发送文件的 MD5 到磁盘"""
@@ -16,26 +17,34 @@ class MessageSender:
         self.temp_dir = temp_dir or "data/plugins_data/astrbot_plugin_fuckanka/temp/shit"
         os.makedirs(self.temp_dir, exist_ok=True)
         self.md5_file = os.path.join(self.temp_dir, "sent_md5.json")
-        self.sent_md5 = self._load_md5()
+        self.sent_md5 = set()
+        # 异步加载 MD5
+        asyncio.create_task(self._async_init())
         logger.info(f"[MessageSender] 初始化完成，目标群组: {target_groups}")
 
-    def _load_md5(self):
-        """从文件加载已发送的 MD5"""
-        if os.path.exists(self.md5_file):
+    async def _async_init(self):
+        """异步初始化"""
+        self.sent_md5 = await self._load_md5()
+
+    async def _load_md5(self):
+        """异步从文件加载已发送的 MD5"""
+        if await asyncio.to_thread(os.path.exists, self.md5_file):
             try:
-                with open(self.md5_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                async with aiofiles.open(self.md5_file, "r", encoding="utf-8") as f:
+                    content = await f.read()
+                    data = json.loads(content) if content.strip() else []
                     logger.info(f"[MessageSender] 已加载 {len(data)} 条已发送 MD5")
                     return set(data)
             except Exception as e:
                 logger.error(f"[MessageSender] 加载 MD5 文件失败: {e}")
         return set()
 
-    def _save_md5(self):
-        """将已发送的 MD5 保存到文件"""
+    async def _save_md5(self):
+        """异步将已发送的 MD5 保存到文件"""
         try:
-            with open(self.md5_file, "w", encoding="utf-8") as f:
-                json.dump(list(self.sent_md5), f, ensure_ascii=False, indent=2)
+            data = json.dumps(list(self.sent_md5), ensure_ascii=False, indent=2)
+            async with aiofiles.open(self.md5_file, "w", encoding="utf-8") as f:
+                await f.write(data)
             logger.info(f"[MessageSender] 已保存 {len(self.sent_md5)} 条 MD5")
         except Exception as e:
             logger.error(f"[MessageSender] 保存 MD5 文件失败: {e}")
@@ -53,24 +62,31 @@ class MessageSender:
             logger.error(f"[MessageSender] 发送消息到群组 {group_id} 失败: {e}")
             return False
 
-    def _calc_md5(self, file_path: str) -> str:
-        if not os.path.exists(file_path):
+    async def _calc_md5(self, file_path: str) -> str:
+        """异步计算文件 MD5"""
+        if not await asyncio.to_thread(os.path.exists, file_path):
             return ""
+        
         hash_md5 = hashlib.md5()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
+        # 使用异步方式读取文件
+        async with aiofiles.open(file_path, "rb") as f:
+            while True:
+                chunk = await f.read(8192)
+                if not chunk:
+                    break
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def _is_duplicate(self, file_path: str) -> bool:
-        md5 = self._calc_md5(file_path)
+    async def _is_duplicate(self, file_path: str) -> bool:
+        """异步检查文件是否重复"""
+        md5 = await self._calc_md5(file_path)
         if not md5:
             return False
         if md5 in self.sent_md5:
             logger.info(f"[MessageSender] 检测到重复文件 (md5={md5})，跳过发送: {file_path}")
             return True
         self.sent_md5.add(md5)
-        self._save_md5()  # 每次新增 MD5 都保存
+        await self._save_md5()  # 异步保存
         return False
 
     async def send_text_message(self, text: str):
@@ -93,7 +109,7 @@ class MessageSender:
             if text:
                 chain = chain.message(text)
             for img_path in image_paths:
-                if self._is_duplicate(img_path):
+                if await self._is_duplicate(img_path):  # 异步检查
                     continue
                 chain = chain.file_image(img_path)
             if not await self._send_message_chain(int(gid), chain):
@@ -104,7 +120,7 @@ class MessageSender:
     async def send_video_message(self, video_path: str):
         if not video_path:
             return False
-        if self._is_duplicate(video_path):
+        if await self._is_duplicate(video_path):  # 异步检查
             return True
         success = True
         for gid in self.target_groups:
