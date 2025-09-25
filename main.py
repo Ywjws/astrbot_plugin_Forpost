@@ -22,13 +22,16 @@ class MediaMonitorPlugin(Star):
         super().__init__(context)
         self.downloader = MediaDownloader()
         self.config = config or {}
+
+        # 黑名单用户列表
+        self.blacklist_users = self.config.get("blacklist_users", [])
         
         self.monitored_groups = [str(gid) for gid in self.config.get("monitored_groups", [])]
         self.target_groups = [str(gid) for gid in self.config.get("target_groups", [])]
 
         temp_dir = "data/plugins_data/astrbot_plugin_fuckanka/temp"
         cleaner = AsyncDailyCleaner(temp_dir)
-        #启动食雪汉
+        # 启动缓存清理任务
         asyncio.create_task(cleaner.run_daily_task())
 
         self.local_cache = LocalCache()
@@ -77,6 +80,14 @@ class MediaMonitorPlugin(Star):
         if "message" not in message_data:
             return
 
+        # 获取用户 ID
+        sender_id = str(message_data.get("sender", {}).get("user_id", ""))
+        
+        # 1. 检查用户是否在黑名单中
+        if sender_id in self.blacklist_users:
+            logger.info(f"[MediaMonitor] 用户 {sender_id} 在黑名单中，跳过消息 {msg_id}")
+            return
+        
         components = await parse_message_components(message_data["message"])
         
         self.message_cache[msg_id] = {
@@ -109,6 +120,11 @@ class MediaMonitorPlugin(Star):
         self.message_cache[msg_id]["text_content"] = "\n".join(text_parts)
         self.message_cache[msg_id]["media_files"] = media_list
         logger.info(f"[MediaMonitor] 普通消息 {msg_id} 解析完成: {len(text_parts)}文本, {len(media_list)}媒体")
+        
+        # 2. 检查消息内容是否为单一文本且文本长度小于10个字符
+        if len(text_parts) == 1 and len(text_parts[0]) < 10:
+            logger.info(f"[MediaMonitor] 消息 {msg_id} 为单文本且长度小于 10 个字符，跳过处理")
+            pass
 
     async def download_and_forward_ordinary_message(self, msg_id: int):
         """下载普通消息的媒体文件并通过sender发送"""
