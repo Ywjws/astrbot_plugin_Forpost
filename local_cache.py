@@ -3,6 +3,7 @@ import os
 import json
 import re
 import aiofiles
+import asyncio
 from astrbot.api import logger
 
 class LocalCache:
@@ -12,23 +13,31 @@ class LocalCache:
         os.makedirs(cache_dir, exist_ok=True)
         
         # 初始化配置
-        self.forward_config = self._load_config()
+        self.forward_config = {}
+        # 异步加载配置
+        asyncio.create_task(self._async_init())
     
-    def _load_config(self):
-        """加载转发配置"""
+    async def _async_init(self):
+        """异步初始化配置"""
+        self.forward_config = await self._load_config()
+    
+    async def _load_config(self):
+        """异步加载转发配置"""
         try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+            if await asyncio.to_thread(os.path.exists, self.config_path):
+                async with aiofiles.open(self.config_path, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    return json.loads(content) if content.strip() else {}
         except Exception as e:
             logger.error(f"[LocalCache] 加载配置失败: {e}")
         return {}
     
-    def _save_config(self):
-        """保存转发配置"""
+    async def _save_config(self):
+        """异步保存转发配置"""
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.forward_config, f, ensure_ascii=False, indent=2)
+            config_data = json.dumps(self.forward_config, ensure_ascii=False, indent=2)
+            async with aiofiles.open(self.config_path, 'w', encoding='utf-8') as f:
+                await f.write(config_data)
             return True
         except Exception as e:
             logger.error(f"[LocalCache] 保存配置失败: {e}")
@@ -189,12 +198,12 @@ class LocalCache:
             if message_data:
                 title, button = self._extract_content_info(message_data)
                 # 先检查是否重复，再添加到配置
-                if not self._is_duplicate_in_config(title, button):
+                if not await self._is_duplicate_in_config(title, button):
                     self.forward_config[str(msg_id)] = {
                         "title": title,  # 不限制长度
                         "button": button  # 不限制长度
                     }
-                    self._save_config()
+                    await self._save_config()
                     logger.info(f"[LocalCache] 消息 {msg_id} 内容已记录: title='{title}', button='{button}'")
                 else:
                     logger.info(f"[LocalCache] 消息 {msg_id} 内容重复，不记录到配置")
@@ -204,7 +213,7 @@ class LocalCache:
             logger.error(f"[LocalCache] 缓存消息失败: {e}")
             return False
     
-    def _is_duplicate_in_config(self, title, button):
+    async def _is_duplicate_in_config(self, title, button):
         """检查配置中是否已存在相同的title和button"""
         if not title or not button:
             return False
@@ -223,7 +232,7 @@ class LocalCache:
         
         return False
     
-    def is_duplicate_forward(self, message_data):
+    async def is_duplicate_forward(self, message_data):
         """检查是否为重复的转发消息"""
         try:
             title, button = self._extract_content_info(message_data)
@@ -235,7 +244,7 @@ class LocalCache:
                 return False
             
             # 检查配置中是否已存在
-            is_duplicate = self._is_duplicate_in_config(title, button)
+            is_duplicate = await self._is_duplicate_in_config(title, button)
             if is_duplicate:
                 logger.info(f"[LocalCache] 发现重复转发消息")
             else:
@@ -249,11 +258,12 @@ class LocalCache:
     async def get_waiting_messages(self):
         """获取所有等待转发的消息ID"""
         try:
-            if not os.path.exists(self.cache_dir):
+            if not await asyncio.to_thread(os.path.exists, self.cache_dir):
                 return []
             
+            files = await asyncio.to_thread(os.listdir, self.cache_dir)
             messages = []
-            for filename in os.listdir(self.cache_dir):
+            for filename in files:
                 if filename.endswith('.json') and filename != "forward_config.json":
                     try:
                         msg_id = int(filename.split('.')[0])
@@ -269,7 +279,7 @@ class LocalCache:
         """获取缓存的消息数据"""
         cache_path = self._get_cache_path(msg_id)
         try:
-            if os.path.exists(cache_path):
+            if await asyncio.to_thread(os.path.exists, cache_path):
                 async with aiofiles.open(cache_path, 'r', encoding='utf-8') as f:
                     content = await f.read()
                     if content.strip():
@@ -283,12 +293,12 @@ class LocalCache:
         """移除缓存的消息"""
         cache_path = self._get_cache_path(msg_id)
         try:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
+            if await asyncio.to_thread(os.path.exists, cache_path):
+                await asyncio.to_thread(os.remove, cache_path)
                 # 从配置中移除
                 if str(msg_id) in self.forward_config:
                     del self.forward_config[str(msg_id)]
-                    self._save_config()
+                    await self._save_config()
                 logger.info(f"[LocalCache] 消息 {msg_id} 已移除")
                 return True
             return False
