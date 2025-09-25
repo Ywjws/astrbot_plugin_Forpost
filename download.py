@@ -86,6 +86,7 @@ class MediaDownloader:
                         os.remove(filepath)
                     except:
                         pass
+                        logger.warning(f"[MediaDownloader] 文件大小为0,remove失败")
                     return ""
             else:
                 logger.warning(f"[MediaDownloader] 文件不存在: {filepath}")
