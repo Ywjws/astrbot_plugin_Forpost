@@ -1,5 +1,6 @@
 import asyncio
 import time
+import datetime
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
@@ -44,7 +45,6 @@ class MediaMonitorPlugin(Star):
 
     async def _run_cache_cleaner(self):
         """定时清理 message_cache"""
-        import datetime
 
         while True:
             # 计算到明天凌晨1点的时间间隔（东八区）
@@ -124,7 +124,7 @@ class MediaMonitorPlugin(Star):
         # 2. 检查消息内容是否为单一文本且文本长度小于10个字符
         if len(text_parts) == 1 and len(text_parts[0]) < 10:
             logger.info(f"[MediaMonitor] 消息 {msg_id} 为单文本且长度小于 10 个字符，跳过处理")
-            pass
+            return
 
     async def download_and_forward_ordinary_message(self, msg_id: int):
         """下载普通消息的媒体文件并通过sender发送"""
