@@ -164,6 +164,7 @@ class LocalCache:
                 # 图片或视频，提取file参数（文件名）
                 return params.get("file", "")
             elif cq_type == "reply":  # <--- 新增处理 reply 类型
+                # 回复消息：忽略CQ码本身，返回后面的正文内容
                 rest_text = raw_message[end_bracket + 1:]
                 return rest_text.strip()
             else:
