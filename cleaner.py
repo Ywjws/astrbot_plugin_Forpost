@@ -25,7 +25,7 @@ class AsyncDailyCleaner:
             return
 
         # 需要保留的特定文件（完整路径）
-        preserve_files = {self.forward_config, self.sent_md5}
+        preserve_files = {"nothing"}
         
         for root, _, files in os.walk(self.temp_dir):
             for file in files:
