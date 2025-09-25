@@ -8,8 +8,6 @@ class AsyncDailyCleaner:
 
     def __init__(self, temp_dir: str):
         self.temp_dir = temp_dir
-        self.forward_config = os.path.join(temp_dir, "shit", "forward_config.json")
-        self.sent_md5 = os.path.join(temp_dir, "shit", "sent_md5.json")
 
     @staticmethod
     def is_even_day_tail() -> bool:
