@@ -8,5 +8,10 @@
     "type": "list",
     "default": ["721936992"],
     "description": "消息转发的目标群号列表"
+  },
+  "blacklist_users": {
+    "type": "list",
+    "default": ["1711413161"],
+    "description": "黑名单用户列表，包含需要被忽略的用户ID"
   }
 }
