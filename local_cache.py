@@ -1,256 +1,297 @@
-import asyncio
-import time
-import datetime
+# local_cache.py
+import os
+import json
+import re
+import aiofiles
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
-from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-from .listen import parse_message_components
-from .download import MediaDownloader
-from .forward_manager import ForwardManager
-from .local_cache import LocalCache
-from .sender import MessageSender
-from .cleaner import AsyncDailyCleaner
 
-@register(
-    "fuckanka",
-    "ali",
-    "监听消息并转发，可用于防撤回，主要还是搬屎用",
-    "0.0.5"
-)
-class MediaMonitorPlugin(Star):
-    def __init__(self, context: Context, config=None):
-        super().__init__(context)
-        self.downloader = MediaDownloader()
-        self.config = config or {}
-
-        # 黑名单用户列表
-        self.blacklist_users = self.config.get("blacklist_users", [])
+class LocalCache:
+    def __init__(self, cache_dir="data/plugins_data/astrbot_plugin_fuckanka/temp/shit"):
+        self.cache_dir = cache_dir
+        self.config_path = os.path.join(cache_dir, "forward_config.json")
+        os.makedirs(cache_dir, exist_ok=True)
         
-        self.monitored_groups = [str(gid) for gid in self.config.get("monitored_groups", [])]
-        self.target_groups = [str(gid) for gid in self.config.get("target_groups", [])]
-
-        temp_dir = "data/plugins_data/astrbot_plugin_fuckanka/temp"
-        cleaner = AsyncDailyCleaner(temp_dir)
-        # 启动缓存清理任务
-        asyncio.create_task(cleaner.run_daily_task())
-
-        self.local_cache = LocalCache()
-        self.sender = MessageSender(context, self.target_groups)
-        self.message_cache = {}
-        logger.info(f"[MediaMonitor] 插件已加载, 监听群: {self.monitored_groups}, 目标群: {self.target_groups}")
-        
-        # 启动缓存清理任务
-        asyncio.create_task(self._run_cache_cleaner())
-
-    async def _run_cache_cleaner(self):
-        """定时清理 message_cache"""
-
-        while True:
-            # 计算到明天凌晨1点的时间间隔（东八区）
-            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-            next_run = now.replace(hour=1, minute=0, second=0, microsecond=0)
-            if now >= next_run:
-                next_run += datetime.timedelta(days=1)
-            sleep_seconds = (next_run - now).total_seconds()
-
-            logger.info(f"[MediaMonitor] 缓存清理任务将在 {sleep_seconds:.0f} 秒后执行（东八区时间 {next_run})")
-            await asyncio.sleep(sleep_seconds)
-
-            # 执行清理
-            self._clean_message_cache()
-
-    def _clean_message_cache(self):
-        """清理 message_cache 中已处理或超时的消息"""
-        to_delete = []
-        for msg_id, info in self.message_cache.items():
-            if info.get("processed", False):
-                to_delete.append(msg_id)
-            # 超时清理（超过1小时未处理的消息也删除）
-            elif time.time() - info.get("timestamp", 0) > 3600:
-                to_delete.append(msg_id)
-
-        for msg_id in to_delete:
-            del self.message_cache[msg_id]
-
-        logger.info(f"[MediaMonitor] 已清理 {len(to_delete)} 条缓存消息")
-
-    async def process_ordinary_message(self, message_data: dict, msg_id: int):
-        """处理普通消息（文本+媒体）"""
-        if "message" not in message_data:
-            return
-
-        # 获取用户 ID
-        sender_id = str(message_data.get("sender", {}).get("user_id", ""))
-        
-        # 1. 检查用户是否在黑名单中
-        if sender_id in self.blacklist_users:
-            logger.info(f"[MediaMonitor] 用户 {sender_id} 在黑名单中，跳过消息 {msg_id}")
-            return
-        
-        components = await parse_message_components(message_data["message"])
-        
-        self.message_cache[msg_id] = {
-            "components": components,
-            "text_content": "",
-            "media_files": [],
-            "processed": False,
-            "is_forward": False,
-            "timestamp": time.time()  # 添加时间戳
-        }
-        
-        text_parts = []
-        media_list = []
-        for comp in components:
-            comp_type = comp.get("type", "").lower()
-            data = comp.get("data", {})
-            if comp_type == "text":
-                txt = data.get("text", "")
-                if txt:
-                    text_parts.append(txt)
-            elif comp_type in ["image", "video", "record"]:
-                url = data.get("url", "")
-                if url:
-                    media_list.append({
-                        "type": comp_type,
-                        "url": url,
-                        "data": data
-                    })
-        
-        self.message_cache[msg_id]["text_content"] = "\n".join(text_parts)
-        self.message_cache[msg_id]["media_files"] = media_list
-        logger.info(f"[MediaMonitor] 普通消息 {msg_id} 解析完成: {len(text_parts)}文本, {len(media_list)}媒体")
-        
-        # 2. 检查消息内容是否为单一文本且文本长度小于10个字符
-        if len(text_parts) == 1 and len(text_parts[0]) < 10:
-            logger.info(f"[MediaMonitor] 消息 {msg_id} 为单文本且长度小于 10 个字符，跳过处理")
-            return
-
-    async def download_and_forward_ordinary_message(self, msg_id: int):
-        """下载普通消息的媒体文件并通过sender发送"""
-        if msg_id not in self.message_cache:
-            return
-        
-        message_info = self.message_cache[msg_id]
-        if message_info.get("is_forward", True):
-            return
-        
-        if message_info["text_content"] or message_info["media_files"]:
-            logger.info(f"[MediaMonitor] 转发普通消息 {msg_id}")
+        # 初始化配置
+        self.forward_config = self._load_config()
+    
+    def _load_config(self):
+        """加载转发配置"""
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.error(f"[LocalCache] 加载配置失败: {e}")
+        return {}
+    
+    def _save_config(self):
+        """保存转发配置"""
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.forward_config, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"[LocalCache] 保存配置失败: {e}")
+            return False
+    
+    def _get_cache_path(self, msg_id):
+        return os.path.join(self.cache_dir, f"{msg_id}.json")
+    
+    def _is_pure_number(self, text):
+        """检查是否为纯数字"""
+        if not text or not isinstance(text, str):
+            return False
+        return text.isdigit()
+    
+    def _compare_values(self, value1, value2):
+        """比较两个值，如果是数字则进行数值比较，否则进行字符串比较"""
+        if not value1 or not value2:
+            return False
             
-            image_paths = []
-            video_path = None
+        if self._is_pure_number(value1) and self._is_pure_number(value2):
+            # 数值比较
+            num1 = int(value1)
+            num2 = int(value2)
+            return num1 == num2
+        else:
+            # 字符串比较
+            return value1 == value2
+    
+    def _extract_content_info(self, message_data):
+        """提取消息的首尾内容"""
+        title = ""
+        button = ""
+        
+        if "message" in message_data and isinstance(message_data["message"], list):
+            # 查找转发消息
+            for comp in message_data["message"]:
+                if isinstance(comp, dict) and comp.get("type") == "forward":
+                    # 提取转发消息的content参数
+                    forward_data = comp.get("data", {})
+                    content = forward_data.get("content", "")
+                    
+                    if isinstance(content, str):
+                        # 字符串形式的content，提取数字部分并拼接"草"
+                        numbers = self._extract_numbers_from_content(content)
+                        title = f"草{numbers}" if numbers else "草"
+                    elif isinstance(content, list) and content:
+                        # 列表形式的content，提取第一条和最后一条消息
+                        first_msg = content[0]
+                        last_msg = content[-1]
+                        
+                        # 提取第一条消息的内容作为title
+                        title = self._extract_message_text(first_msg, is_title=True)
+                        
+                        # 提取最后一条消息的内容作为button
+                        button = self._extract_message_text(last_msg, is_title=False)
+                    break
+        
+        return title, button
+    
+    def _extract_numbers_from_content(self, content):
+        """从content字符串中提取数字部分"""
+        if not content:
+            return ""
+        
+        # 提取所有数字
+        numbers = re.findall(r'\d+', content)
+        if numbers:
+            # 返回所有数字连接起来的字符串
+            return ''.join(numbers)
+        return ""
+    
+    def _extract_message_text(self, message, is_title=False):
+        """从单条消息中提取文本内容"""
+        if not isinstance(message, dict):
+            return ""
+        
+        # 优先使用raw_message
+        raw_message = message.get("raw_message", "")
+        if raw_message:
+            extracted = self._extract_raw_message_content(raw_message, is_title)
+            return extracted
+        
+        # 如果没有raw_message，尝试从message字段提取
+        message_content = message.get("message", "")
+        if isinstance(message_content, list):
+            # 从消息组件中提取文本
+            text_parts = []
+            for comp in message_content:
+                if isinstance(comp, dict) and comp.get("type") == "text":
+                    text_parts.append(comp.get("data", {}).get("text", ""))
+            result = "".join(text_parts)
+            return result
+        elif isinstance(message_content, str):
+            return message_content
+        
+        return ""
+    
+    def _extract_raw_message_content(self, raw_message, is_title=False):
+        """从raw_message中提取内容"""
+        if not raw_message or not isinstance(raw_message, str):
+            return ""
+        
+        # 处理CQ码
+        if raw_message.startswith("[CQ:"):
+            # 提取CQ码类型和参数
+            end_bracket = raw_message.find("]")
+            if end_bracket == -1:
+                return raw_message
+                
+            cq_content = raw_message[4:end_bracket]
+            comma_pos = cq_content.find(",")
             
-            for media_info in message_info["media_files"]:
-                logger.info(f"[MediaMonitor] 开始下载媒体: {media_info['type']}")
-                result = await self.downloader.download_media(media_info)
-                if result:
-                    if media_info["type"] == "image":
-                        image_paths.append(result)
-                        logger.info(f"[MediaMonitor] 图片下载成功: {result}")
-                    elif media_info["type"] == "video" and video_path is None:
-                        video_path = result
-                        logger.info(f"[MediaMonitor] 视频下载成功: {result}")
-                    elif media_info["type"] == "record":
-                        logger.info(f"[MediaMonitor] 语音消息下载成功: {result}")
-            
-            # ✅ 调用 sender 发送
-            if video_path:
-                await self.sender.send_combined_message(
-                    text=message_info["text_content"],
-                    image_paths=image_paths,
-                    video_path=video_path
-                )
-            elif image_paths:
-                await self.sender.send_combined_message(
-                    text=message_info["text_content"],
-                    image_paths=image_paths
-                )
+            if comma_pos == -1:
+                cq_type = cq_content
+                params_str = ""
             else:
-                await self.sender.send_text_message(message_info["text_content"])
-        
-        message_info["processed"] = True
-
-    async def process_forward_message(self, event: AstrMessageEvent, message_data: dict, msg_id: int):
-        """处理转发消息 - 直接通过forward_manager转发"""
-        # 检查是否为重复转发
-        if self.local_cache.is_duplicate_forward(message_data):
-            logger.info(f"[MediaMonitor] 检测到重复转发消息, ID: {msg_id}，跳过处理")
-            return
-        
-        logger.info(f"[MediaMonitor] 检测到转发消息, ID: {msg_id}")
-        
-        # 缓存转发消息信息（用于去重）
-        await self.local_cache.add_cache(msg_id, message_data)
-        
-        # 直接通过forward_manager转发到目标群组
-        if self.target_groups:
-            forward_manager = ForwardManager(event)
-            for target_group in self.target_groups:
-                try:
-                    await forward_manager.send_forward_msg_raw(msg_id, int(target_group))
-                    logger.info(f"[MediaMonitor] 转发消息 {msg_id} 到群组 {target_group}")
-                    await asyncio.sleep(1)  # 避免发送过快
-                except Exception as e:
-                    logger.error(f"[MediaMonitor] 转发消息失败: {e}")
-
-    def is_forward_message(self, message_data: dict) -> bool:
-        """检查是否为转发消息"""
-        if "message" not in message_data:
+                cq_type = cq_content[:comma_pos]
+                params_str = cq_content[comma_pos + 1:]
+            
+            # 解析参数
+            params = {}
+            for param in params_str.split(","):
+                if "=" in param:
+                    key, value = param.split("=", 1)
+                    params[key] = value
+            
+            if cq_type == "forward":
+                # 转发消息，提取content参数中的数字部分并拼接"草"
+                content = params.get("content", "")
+                numbers = self._extract_numbers_from_content(content)
+                return f"草{numbers}" if numbers else "草"
+            elif cq_type in ["image", "video"]:
+                # 图片或视频，提取file参数（文件名）
+                return params.get("file", "")
+            elif cq_type == "reply":  # <--- 新增处理 reply 类型
+                # 回复消息：忽略CQ码本身，返回后面的正文内容
+                rest_text = raw_message[end_bracket + 1:]
+                return rest_text.strip()
+            else:
+                # 其他CQ码，返回原始消息
+                return raw_message
+        else:
+            # 文本消息，直接返回
+            return raw_message
+    
+    async def add_cache(self, msg_id, message_data=None):
+        """缓存消息到本地，并记录首尾内容"""
+        cache_path = self._get_cache_path(msg_id)
+        try:
+            async with aiofiles.open(cache_path, 'w', encoding='utf-8') as f:
+                if message_data:
+                    await f.write(json.dumps(message_data, ensure_ascii=False, indent=2))
+                else:
+                    await f.write('')
+            logger.info(f"[LocalCache] 消息 {msg_id} 已缓存")
+            
+            # 记录首尾内容到配置
+            if message_data:
+                title, button = self._extract_content_info(message_data)
+                # 先检查是否重复，再添加到配置
+                if not self._is_duplicate_in_config(title, button):
+                    self.forward_config[str(msg_id)] = {
+                        "title": title,  # 不限制长度
+                        "button": button  # 不限制长度
+                    }
+                    self._save_config()
+                    logger.info(f"[LocalCache] 消息 {msg_id} 内容已记录: title='{title}', button='{button}'")
+                else:
+                    logger.info(f"[LocalCache] 消息 {msg_id} 内容重复，不记录到配置")
+            
+            return True
+        except Exception as e:
+            logger.error(f"[LocalCache] 缓存消息失败: {e}")
+            return False
+    
+    def _is_duplicate_in_config(self, title, button):
+        """检查配置中是否已存在相同的title和button"""
+        if not title or not button:
             return False
         
-        for comp in message_data["message"]:
-            if comp.get("type") == "forward":
+        for config in self.forward_config.values():
+            config_title = config.get("title", "")
+            config_button = config.get("button", "")
+            
+            # 使用智能比较（数字比较或字符串比较）
+            title_match = self._compare_values(config_title, title)
+            button_match = self._compare_values(config_button, button)
+            
+            if title_match and button_match:
+                logger.info(f"[LocalCache] 发现重复内容: title='{title}'='{config_title}', button='{button}'='{config_button}'")
                 return True
+        
         return False
-
-    @filter.event_message_type(filter.EventMessageType.ALL)
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    async def on_message(self, event: AstrMessageEvent):
-        """消息事件处理 - 分离转发消息和普通消息的处理逻辑"""
-        if not isinstance(event, AiocqhttpMessageEvent):
-            return
-
-        group_id = event.get_group_id()
-        if group_id is None:
-            return
-
-        group_id_str = str(group_id)
-        if self.monitored_groups and group_id_str not in self.monitored_groups:
-            return
-
-        client = event.bot
-        msg_id = event.message_obj.message_id
-        sender_id = str(event.get_sender_id())
-        sender_name = event.get_sender_name()
-
-        logger.info(f"[MediaMonitor] 收到消息 - 群: {group_id_str}, 用户: {sender_name}({sender_id}), 消息ID: {msg_id}")
-
+    
+    def is_duplicate_forward(self, message_data):
+        """检查是否为重复的转发消息"""
         try:
-            # 获取完整消息详情
-            ret = await client.api.call_action("get_msg", message_id=msg_id)
-
-            # 分离处理逻辑
-            if self.is_forward_message(ret):
-                # 转发消息：直接通过forward_manager处理
-                await self.process_forward_message(event, ret, msg_id)
+            title, button = self._extract_content_info(message_data)
+            logger.info(f"[LocalCache] 检查重复: title='{title}', button='{button}'")
+            
+            # 如果title或button为空，不认为是重复
+            if not title or not button:
+                logger.info(f"[LocalCache] title或button为空，不进行重复检查")
+                return False
+            
+            # 检查配置中是否已存在
+            is_duplicate = self._is_duplicate_in_config(title, button)
+            if is_duplicate:
+                logger.info(f"[LocalCache] 发现重复转发消息")
             else:
-                # 普通消息：通过sender处理
-                await self.process_ordinary_message(ret, msg_id)
-                # 异步下载和转发
-                asyncio.create_task(self.download_and_forward_ordinary_message(msg_id))
-
+                logger.info(f"[LocalCache] 未发现重复消息")
+            
+            return is_duplicate
         except Exception as e:
-            try:
-                # 尝试读取异常属性
-                msg_text = getattr(e, "message", str(e))
-                if msg_text == "消息不存在" :
-                    logger.warning(f"[MediaMonitor] 无意义消息 {msg_id}, message='消息不存在', 已忽略")
-                    return  
-            except Exception:
-                pass
-
-            # 其他异常继续打印 traceback
-            import traceback
-            logger.error(f"[MediaMonitor] 处理消息失败: {e}")
-            logger.error(f"[MediaMonitor] 错误详情: {traceback.format_exc()}")
+            logger.error(f"[LocalCache] 检查重复转发失败: {e}")
+            return False
+    
+    async def get_waiting_messages(self):
+        """获取所有等待转发的消息ID"""
+        try:
+            if not os.path.exists(self.cache_dir):
+                return []
+            
+            messages = []
+            for filename in os.listdir(self.cache_dir):
+                if filename.endswith('.json') and filename != "forward_config.json":
+                    try:
+                        msg_id = int(filename.split('.')[0])
+                        messages.append(msg_id)
+                    except ValueError:
+                        continue
+            return messages
+        except Exception as e:
+            logger.error(f"[LocalCache] 获取等待消息失败: {e}")
+            return []
+    
+    async def get_message_data(self, msg_id):
+        """获取缓存的消息数据"""
+        cache_path = self._get_cache_path(msg_id)
+        try:
+            if os.path.exists(cache_path):
+                async with aiofiles.open(cache_path, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    if content.strip():
+                        return json.loads(content)
+            return None
+        except Exception as e:
+            logger.error(f"[LocalCache] 获取消息数据失败: {e}")
+            return None
+    
+    async def remove_cache(self, msg_id):
+        """移除缓存的消息"""
+        cache_path = self._get_cache_path(msg_id)
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                # 从配置中移除
+                if str(msg_id) in self.forward_config:
+                    del self.forward_config[str(msg_id)]
+                    self._save_config()
+                logger.info(f"[LocalCache] 消息 {msg_id} 已移除")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"[LocalCache] 移除消息失败: {e}")
+            return False
